@@ -1,101 +1,94 @@
 import numpy as np
-
 from scipy.stats import qmc
+from pymoo.problems import get_problem
+ 
  
 class Benchmark:
-
-    def __init__(self, name: str, dim: int):
-
-        """
-
-        Initialise le benchmark choisi.
-
-        name : str : 'rosenbrock' ou 'kursawe'
-
-        dim : int : dimension du problème
-
-        """
-
+    def __init__(self, name: str, dim: int = None):
         self.name = name.lower()
-
         self.dim = dim
-
-        self.bounds = self._set_bounds()
-
-    def _set_bounds(self):
-
-        """ Définit les bornes usuelles pour le benchmark. """
-
+        # Instanciation du benchmark via pymoo
         if self.name == "rosenbrock":
-
-            # Domaine classique : [-5, 10]^d
-
-            return np.array([[-5.0, 10.0]] * self.dim)
-
+            if self.dim is None:
+                raise ValueError("Préciser la dimension pour Rosenbrock")
+            self.problem = get_problem("rosenbrock", n_var=self.dim)
+        elif self.name == "branin":
+            self.problem = get_problem("branin")
+            self.dim = self.problem.n_var
         elif self.name == "kursawe":
-
-            # Domaine standard : [-5, 5]^3
-
-            if self.dim != 3:
-
-                raise ValueError("Kursawe est défini en 3 dimensions")
-
-            return np.array([[-5.0, 5.0]] * self.dim)
-
+            self.problem = get_problem("kursawe")
+            self.dim = self.problem.n_var
+        elif self.name == "hartmann":
+            if self.dim not in (3, 6):
+                raise ValueError("Hartmann dispo en 3D ou 6D dans pymoo")
+            self.problem = get_problem(f"hartmann{self.dim}")
         else:
-
             raise ValueError(f"Benchmark {self.name} non reconnu.")
-
+        # bornes
+        self.bounds = np.vstack([self.problem.xl, self.problem.xu]).T
+    
+    # DoE generators
     def sample_sobol(self, n_points: int, scramble: bool = True):
-
-        """ Génère un plan Sobol. """
-
         sampler = qmc.Sobol(d=self.dim, scramble=scramble)
-
         sample = sampler.random(n_points)
-
         return qmc.scale(sample, self.bounds[:,0], self.bounds[:,1])
-
     def sample_halton(self, n_points: int, scramble: bool = True):
-
-        """ Génère un plan Halton. """
-
         sampler = qmc.Halton(d=self.dim, scramble=scramble)
-
         sample = sampler.random(n_points)
-
         return qmc.scale(sample, self.bounds[:,0], self.bounds[:,1])
-
-    def sample_lhs(self, n_points: int, criterion: str = "maximin", iterations: int = 1000):
-
-        """ Génère un plan Latin Hypercube Sampling. """
-
+    def sample_lhs(self, n_points: int, criterion: str = "maximin"):
         sampler = qmc.LatinHypercube(d=self.dim, optimization=criterion)
-
         sample = sampler.random(n_points)
-
         return qmc.scale(sample, self.bounds[:,0], self.bounds[:,1])
+    
+    # Evaluation via pymoo
+    def evaluate(self, X: np.ndarray):
+        return self.problem.evaluate(X)
+    
+    # Outlier injection
+    def inject_outliers(self, X, Y, n_outliers=5, mode="X"):
+        """
+        Injects outliers into X, Y or both.
+        Parameters
+        ----------
+        X : np.ndarray
+            Design parameters
+        Y : np.ndarray
+            Output parameters
+        n_outliers : int
+            Number of outliers to inject
+        mode : str
+            "X" -> outliers in X
+            "Y" -> outliers in Y
+            "both" -> outliers in X and Y
+        Returns
+        -------
+        X_out, Y_out : data with injected outliers
+        """
+        X_out, Y_out = X.copy(), Y.copy()
+        n = X.shape[0]
+        idx = np.random.choice(n, n_outliers, replace=False)
+        if mode in ["X", "both"]:
+            # Génère des valeurs très éloignées (ex: ±10x bornes)
+            span = self.bounds[:,1] - self.bounds[:,0]
+            noise = np.random.uniform(-5, 5, size=(n_outliers, self.dim)) * span
+            X_out[idx] = X_out[idx] + noise
+        if mode in ["Y", "both"]:
+            # Ajoute du bruit gaussien fort sur Y
+            scale = np.std(Y, axis=0) * 10.0
+            noise = np.random.normal(0, scale, size=Y_out[idx].shape)
+            Y_out[idx] = Y_out[idx] + noise
+        return X_out, Y_out
  
-# ------------------------
+ 
 
-# Exemple d’utilisation :
-
+# Testing
 if __name__ == "__main__":
-
-    # Rosenbrock 2D
-
-    bench_rosen = Benchmark("rosenbrock", dim=2)
-
-    X_rosen = bench_rosen.sample_sobol(128)
-
-    print("Sobol Rosenbrock 2D:\n", X_rosen[:5])
-
-    # Kursawe 3D
-
-    bench_kursawe = Benchmark("kursawe", dim=3)
-
-    X_kursawe = bench_kursawe.sample_lhs(100)
-
-    print("LHS Kursawe 3D:\n", X_kursawe[:5])
-
- 
+    # Rosenbrock 5D
+    bench = Benchmark("rosenbrock", dim=5)
+    X = bench.sample_sobol(50)
+    Y = bench.evaluate(X)
+    # Injection d’outliers
+    Xo, Yo = bench.inject_outliers(X, Y, n_outliers=5, mode="both")
+    print("Original Y (min,max):", Y.min(), Y.max())
+    print("With outliers Y (min,max):", Yo.min(), Yo.max())
